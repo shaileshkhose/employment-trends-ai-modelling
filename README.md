@@ -1,9 +1,32 @@
 # employment-trends-ai-modelling
-Modeling Employment Trends and AI‑Driven White‑Collar Job Displacement in USA
+Modeling Employment Trends and AI‑Driven White‑Collar Job Displacement in Illinois
 
-# Objective
+# Project Overview
+This project investigates employment trends in Illinois and evaluates how advances in artificial intelligence may impact white-collar occupation. By combining employment statistics, occupational characteristics, and demographic data, the team will identify occupations that may not be susceptible to AI-driven disruption.
 
-Study how AI adoption may influence white-collar employment patterns in Illinois.
+# Objectives
+
+* Analyze employment trends in Illinois
+* Measure AI exposure of white-collar occupations
+* Identify occupations at risk of displacement
+* Build predictive models for employment changes
+
+# Milestones
+* Repository Setup
+* Data Acquisition
+* Exploratory Data Analysis
+* Model Development
+* Final Report
+* Class Presentation
+
+# Methodology
+   1) Collect employment data from BLS.
+   2) Extract occupational characteritics from ONET.
+   3) Obtain workfore demographics from ACS.
+   4) Merge datasets using SOC occupation codes.
+   5) Perform exploratory data analyis (EDA).
+   6) Develop predictive models.
+   7) Evaluate employment trends and AI exposure.
 
 # Research Questions
 
