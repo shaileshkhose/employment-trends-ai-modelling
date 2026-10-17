@@ -1,0 +1,582 @@
+import pandas as pd
+
+# Load the illinois.csv file into a pandas DataFrame
+df = pd.read_csv('illinois.csv')
+
+# Display the first 5 rows of the DataFrame
+print(df.head())
+
+import matplotlib.pyplot as plt
+import seaborn as sns
+import re
+
+# Clean column names by stripping whitespace
+df.columns = df.columns.str.strip()
+
+# Filter out the 'Total Nonfarm' row, as it's an aggregate and can obscure individual industry trends
+# We will focus on specific industries.
+industries_df = df[df['Industry Title'].str.strip() != 'Total Nonfarm'].copy()
+
+# Identify columns that represent months (e.g., 'Jan-90', 'Dec-25')
+month_year_pattern = re.compile(r'^[A-Za-z]{3}-\d{2}$', re.IGNORECASE)
+potential_month_cols = [col for col in industries_df.columns if month_year_pattern.match(col)]
+
+# Find the starting point for the visualization as requested (Feb-90)
+try:
+    start_col_index = potential_month_cols.index('Feb-90')
+    selected_month_cols = potential_month_cols[start_col_index:]
+except ValueError:
+    # Fallback: if 'Feb-90' is not found, plot all identified month columns
+    print("Warning: 'Feb-90' column not found. Plotting all available month-year columns.")
+    selected_month_cols = potential_month_cols
+
+# Select only the 'Industry Title' and the chosen month columns for plotting
+plot_df = industries_df[['Industry Title'] + selected_month_cols]
+
+# Melt the DataFrame from wide to long format for easier plotting with seaborn
+melted_df = plot_df.melt(id_vars=['Industry Title'], var_name='Month', value_name='Employment')
+
+# Clean the 'Employment' column: remove commas and convert to numeric. Coerce errors to NaN.
+melted_df['Employment'] = melted_df['Employment'].str.replace(',', '', regex=False)
+melted_df['Employment'] = pd.to_numeric(melted_df['Employment'], errors='coerce')
+
+# Convert 'Month' column to datetime objects for proper time series plotting
+melted_df['Month'] = pd.to_datetime(melted_df['Month'], format='%b-%y')
+
+# Drop rows where 'Employment' could not be converted (NaN values)
+melted_df.dropna(subset=['Employment'], inplace=True)
+
+# Create the line plot
+plt.figure(figsize=(16, 9)) # Adjust figure size for better readability
+sns.lineplot(data=melted_df, x='Month', y='Employment', hue='Industry Title', linewidth=1.5)
+
+plt.title('Illinois Industry Employment Trends (Feb 1990 - Last Available Month)', fontsize=18)
+plt.xlabel('Date', fontsize=14)
+plt.ylabel('Employment', fontsize=14)
+plt.legend(title='Industry', bbox_to_anchor=(1.02, 1), loc='upper left', borderaxespad=0.) # Place legend outside the plot
+plt.grid(True, linestyle='--', alpha=0.7)
+plt.xticks(rotation=45, ha='right') # Rotate x-axis labels for better readability
+plt.tight_layout() # Adjust layout to prevent labels/legend from being cut off
+plt.show()
+
+import plotly.express as px
+
+# Create the Plotly line plot
+fig = px.line(
+    melted_df,
+    x='Month',
+    y='Employment',
+    color='Industry Title',
+    title='Illinois Industry Employment Trends (Feb 1990 - Last Available Month)',
+    labels={'Month': 'Date', 'Employment': 'Employment'}
+)
+
+# Update layout for better readability, similar to the previous matplotlib plot
+fig.update_layout(
+    hovermode="x unified", # Shows tooltip for all series at the same x-value
+    legend_title_text='Industry',
+    legend=dict(
+        orientation="v",  # Set orientation to vertical
+        yanchor="top",    # Anchor the legend to the top
+        y=1,              # Position at the top of the plot area
+        xanchor="left",   # Anchor the legend to the left
+        x=1.02            # Position slightly outside the plot area on the right
+    )
+)
+
+# Add grid for readability
+fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor='LightGrey')
+fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='LightGrey')
+
+# Display the plot
+fig.show()
+
+# Ensure the data is sorted by Industry Title and Month for correct difference calculation
+melted_df_sorted = melted_df.sort_values(by=['Industry Title', 'Month'])
+
+# Calculate the month-over-month change in employment for each industry
+melted_df_sorted['Employment_Change'] = melted_df_sorted.groupby('Industry Title')['Employment'].diff()
+
+# Find the row corresponding to the greatest dip (most negative change) for each industry
+greatest_dips_per_industry = melted_df_sorted.loc[melted_df_sorted.groupby('Industry Title')['Employment_Change'].idxmin()]
+
+# Create a new DataFrame with the relevant information
+greatest_dips_df = greatest_dips_per_industry[['Industry Title', 'Month', 'Employment_Change']].reset_index(drop=True)
+greatest_dips_df.rename(columns={'Employment_Change': 'Greatest_Dip_Magnitude'}, inplace=True)
+
+print("Greatest Employment Dips per Industry:")
+display(greatest_dips_df)
+
+import plotly.graph_objects as go
+
+# Create the base line plot for overall employment trends
+fig_combined = px.line(
+    melted_df,
+    x='Month',
+    y='Employment',
+    color='Industry Title',
+    title='Illinois Industry Employment Trends with 5th Percentile Dips Highlighted',
+    labels={'Month': 'Date', 'Employment': 'Employment'}
+)
+
+# Add markers for the significant dips (from recession_dips_df_strict)
+# Filter recession_dips_df_strict to only include industries present in melted_df
+# This step might be redundant if both DFs were generated from the same filtered data, but good for robustness
+dips_to_overlay = recession_dips_df_strict[recession_dips_df_strict['Industry Title'].isin(melted_df['Industry Title'].unique())]
+
+# Loop through each industry to add scatter markers for dips
+for industry in dips_to_overlay['Industry Title'].unique():
+    industry_dips = dips_to_overlay[dips_to_overlay['Industry Title'] == industry]
+    # Get the corresponding employment value from melted_df for each dip month
+    # This is important to plot the marker at the actual employment level, not the dip magnitude
+    employment_at_dip = []
+    for _, row in industry_dips.iterrows():
+        matching_employment = melted_df[(melted_df['Industry Title'] == industry) & (melted_df['Month'] == row['Month'])]['Employment']
+        if not matching_employment.empty:
+            employment_at_dip.append(matching_employment.iloc[0])
+        else:
+            employment_at_dip.append(None) # Handle cases where there's no matching employment data
+
+    fig_combined.add_trace(
+        go.Scatter(
+            x=industry_dips['Month'],
+            y=employment_at_dip,
+            mode='markers',
+            marker=dict(symbol='triangle-down', size=10, color='red', line=dict(width=1, color='DarkRed')),
+            name=f'{industry} Dip',
+            hoverinfo='text',
+            hovertext=industry_dips.apply(lambda row: f"Industry: {row['Industry Title']}<br>Date: {row['Month'].strftime('%Y-%m')}<br>Dip Magnitude: {row['Dip_Magnitude']:,}", axis=1),
+            showlegend=False # Prevent duplicate legend entries for dips
+        )
+    )
+
+
+# Update layout for better readability
+fig_combined.update_layout(
+    hovermode="x unified",
+    legend_title_text='Industry',
+    legend=dict(
+        orientation="v",
+        yanchor="top",
+        y=1,
+        xanchor="left",
+        x=1.02
+    )
+)
+
+# Add grid for readability
+fig_combined.update_xaxes(showgrid=True, gridwidth=1, gridcolor='LightGrey')
+fig_combined.update_yaxes(showgrid=True, gridwidth=1, gridcolor='LightGrey')
+
+fig_combined.show()
+
+# Calculate month-over-month employment change (already in melted_df_sorted)
+
+# Calculate the 10th percentile of negative Employment_Change for each industry
+# Only consider industries with at least some negative changes to calculate percentile
+negative_changes_per_industry = melted_df_sorted[melted_df_sorted['Employment_Change'] < 0]
+
+# Ensure there are negative changes before calculating quantiles
+if not negative_changes_per_industry.empty:
+    dip_thresholds = negative_changes_per_industry.groupby('Industry Title')['Employment_Change'].quantile(0.10)
+else:
+    dip_thresholds = pd.Series([], dtype='float64') # Empty series if no negative changes
+
+# Identify significant dips based on the calculated thresholds
+significant_dips_list = []
+for industry, threshold in dip_thresholds.items():
+    industry_dips = melted_df_sorted[
+        (melted_df_sorted['Industry Title'] == industry) &
+        (melted_df_sorted['Employment_Change'] <= threshold)
+    ].copy()
+    significant_dips_list.append(industry_dips)
+
+# Concatenate all identified significant dips into a single DataFrame
+if significant_dips_list:
+    recession_dips_df = pd.concat(significant_dips_list)
+else:
+    recession_dips_df = pd.DataFrame(columns=['Industry Title', 'Month', 'Employment', 'Employment_Change'])
+
+# Select relevant columns for the final DataFrame and rename for clarity
+recession_dips_df = recession_dips_df[['Industry Title', 'Month', 'Employment_Change']]
+recession_dips_df.rename(columns={'Employment_Change': 'Dip_Magnitude'}, inplace=True)
+
+# Add a column for absolute dip magnitude for log scale visualization
+recession_dips_df['Abs_Dip_Magnitude'] = recession_dips_df['Dip_Magnitude'].abs()
+
+print("DataFrame of Significant Monthly Employment Dips:")
+display(recession_dips_df.sort_values(by=['Month', 'Industry Title']))
+
+import plotly.express as px
+import numpy as np
+
+# Create an interactive line plot of the significant dips
+fig_dips = px.line(
+    recession_dips_df,
+    x='Month',
+    y='Abs_Dip_Magnitude', # Use absolute magnitude for log scale
+    color='Industry Title',
+    title='Significant Monthly Employment Dips by Industry (Decelerations)',
+    labels={
+        'Month': 'Date',
+        'Abs_Dip_Magnitude': 'Dip Magnitude (Change in Employment)' # Label still implies negative change
+    },
+    hover_data={'Month': '|%Y-%m-%d', 'Industry Title': True, 'Dip_Magnitude': ':, .0f', 'Abs_Dip_Magnitude': False}
+)
+
+fig_dips.update_traces(mode='lines+markers', marker=dict(size=10, opacity=0.8, line=dict(width=1, color='DarkSlateGrey')))
+
+# Check if there are dips to avoid errors with empty dataframes
+if not recession_dips_df.empty and not recession_dips_df['Abs_Dip_Magnitude'].empty:
+    max_dip_abs = recession_dips_df['Abs_Dip_Magnitude'].max()
+    min_dip_abs = recession_dips_df['Abs_Dip_Magnitude'].min()
+
+    # Generate tick values that are powers of 10 within the range
+    # Ensure min_dip_abs is greater than 0 for log scale
+    if min_dip_abs > 0:
+        tick_vals = [10**i for i in range(int(np.floor(np.log10(min_dip_abs))), int(np.ceil(np.log10(max_dip_abs))) + 1)]
+        tick_vals = [t for t in tick_vals if min_dip_abs <= t <= max_dip_abs] # Filter to actual data range
+        tick_text = [f'-{t:,}' for t in tick_vals] # Create corresponding negative tick labels
+    else: # Handle cases where min_dip_abs might be 0 or very small, just use default ticks if log scale is problematic
+        tick_vals = None
+        tick_text = None
+
+    fig_dips.update_yaxes(
+        type='log',
+        title_text='Dip Magnitude (Change in Employment)',
+        tickvals=tick_vals,
+        ticktext=tick_text,
+        showgrid=True, gridwidth=1, gridcolor='LightGrey'
+    )
+else:
+    # If no dips or Abs_Dip_Magnitude is empty, just use default linear axis
+    fig_dips.update_yaxes(
+        title_text='Dip Magnitude (Change in Employment)',
+        showgrid=True, gridwidth=1, gridcolor='LightGrey'
+    )
+
+
+fig_dips.update_layout(
+    hovermode="x unified",
+    legend_title_text='Industry',
+    legend=dict(
+        orientation="v",
+        yanchor="top",
+        y=1,
+        xanchor="left",
+        x=1.02
+    )
+)
+
+# Add grid for readability for x-axis (y-axis grid already handled above)
+fig_dips.update_xaxes(showgrid=True, gridwidth=1, gridcolor='LightGrey')
+
+fig_dips.show()
+
+import base64
+from IPython.display import HTML
+
+def create_download_link(df, filename, title="Download CSV file"):
+    csv = df.to_csv(index=False)
+    b64 = base64.b64encode(csv.encode()).decode()  # some strings <-> bytes conversions necessary here
+    href = f'<a href="data:text/csv;base64,{b64}" download="{filename}.csv">{title}</a>'
+    return HTML(href)
+
+# Calculate the 5th percentile of negative Employment_Change for each industry
+# Only consider industries with at least some negative changes to calculate percentile
+negative_changes_per_industry_strict = melted_df_sorted[melted_df_sorted['Employment_Change'] < 0]
+
+# Ensure there are negative changes before calculating quantiles
+if not negative_changes_per_industry_strict.empty:
+    dip_thresholds_strict = negative_changes_per_industry_strict.groupby('Industry Title')['Employment_Change'].quantile(0.05)
+else:
+    dip_thresholds_strict = pd.Series([], dtype='float64') # Empty series if no negative changes
+
+# Identify significant dips based on the calculated stricter thresholds
+significant_dips_list_strict = []
+for industry, threshold in dip_thresholds_strict.items():
+    industry_dips_strict = melted_df_sorted[
+        (melted_df_sorted['Industry Title'] == industry) &
+        (melted_df_sorted['Employment_Change'] <= threshold)
+    ].copy()
+    significant_dips_list_strict.append(industry_dips_strict)
+
+# Concatenate all identified significant dips into a single DataFrame
+if significant_dips_list_strict:
+    recession_dips_df_strict = pd.concat(significant_dips_list_strict)
+else:
+    recession_dips_df_strict = pd.DataFrame(columns=['Industry Title', 'Month', 'Employment', 'Employment_Change'])
+
+# Select relevant columns for the final DataFrame and rename for clarity
+recession_dips_df_strict = recession_dips_df_strict[['Industry Title', 'Month', 'Employment_Change']]
+recession_dips_df_strict.rename(columns={'Employment_Change': 'Dip_Magnitude'}, inplace=True)
+
+# Add a column for absolute dip magnitude for log scale visualization
+recession_dips_df_strict['Abs_Dip_Magnitude'] = recession_dips_df_strict['Dip_Magnitude'].abs()
+
+print("DataFrame of More Extreme Significant Monthly Employment Dips (5th Percentile Threshold):")
+display(recession_dips_df_strict.sort_values(by=['Month', 'Industry Title']))
+
+# Add download link for recession_dips_df_strict
+print("\nDownload link for this DataFrame:")
+display(create_download_link(recession_dips_df_strict, "recession_dips_5th_percentile"))
+
+import plotly.express as px
+import numpy as np
+
+# Create an interactive line plot of the more extreme significant dips
+fig_dips_strict = px.line(
+    recession_dips_df_strict,
+    x='Month',
+    y='Abs_Dip_Magnitude', # Use absolute magnitude for log scale
+    color='Industry Title',
+    title='More Extreme Significant Monthly Employment Dips by Industry (5th Percentile)',
+    labels={
+        'Month': 'Date',
+        'Abs_Dip_Magnitude': 'Dip Magnitude (Change in Employment)' # Label still implies negative change
+    },
+    hover_data={'Month': '|%Y-%m-%d', 'Industry Title': True, 'Dip_Magnitude': ':, .0f', 'Abs_Dip_Magnitude': False}
+)
+
+fig_dips_strict.update_traces(mode='lines+markers', marker=dict(size=10, opacity=0.8, line=dict(width=1, color='DarkSlateGrey')))
+
+# Check if there are dips to avoid errors with empty dataframes
+if not recession_dips_df_strict.empty and not recession_dips_df_strict['Abs_Dip_Magnitude'].empty:
+    max_dip_abs_strict = recession_dips_df_strict['Abs_Dip_Magnitude'].max()
+    min_dip_abs_strict = recession_dips_df_strict['Abs_Dip_Magnitude'].min()
+
+    # Generate tick values that are powers of 10 within the range
+    if min_dip_abs_strict > 0:
+        tick_vals_strict = [10**i for i in range(int(np.floor(np.log10(min_dip_abs_strict))), int(np.ceil(np.log10(max_dip_abs_strict))) + 1)]
+        tick_vals_strict = [t for t in tick_vals_strict if min_dip_abs_strict <= t <= max_dip_abs_strict] # Filter to actual data range
+        tick_text_strict = [f'-{t:,}' for t in tick_vals_strict] # Create corresponding negative tick labels
+    else:
+        tick_vals_strict = None
+        tick_text_strict = None
+
+    fig_dips_strict.update_yaxes(
+        type='log',
+        title_text='Dip Magnitude (Change in Employment)',
+        tickvals=tick_vals_strict,
+        ticktext=tick_text_strict,
+        showgrid=True, gridwidth=1, gridcolor='LightGrey'
+    )
+else:
+    fig_dips_strict.update_yaxes(
+        title_text='Dip Magnitude (Change in Employment)',
+        showgrid=True, gridwidth=1, gridcolor='LightGrey'
+    )
+
+fig_dips_strict.update_layout(
+    hovermode="x unified",
+    legend_title_text='Industry',
+    legend=dict(
+        orientation="v",
+        yanchor="top",
+        y=1,
+        xanchor="left",
+        x=1.02
+    )
+)
+
+# Add grid for readability for x-axis
+fig_dips_strict.update_xaxes(showgrid=True, gridwidth=1, gridcolor='LightGrey')
+
+fig_dips_strict.show()
+
+# Calculate the 1st percentile of negative Employment_Change for each industry
+# Only consider industries with at least some negative changes to calculate percentile
+negative_changes_per_industry_super_strict = melted_df_sorted[melted_df_sorted['Employment_Change'] < 0]
+
+# Ensure there are negative changes before calculating quantiles
+if not negative_changes_per_industry_super_strict.empty:
+    dip_thresholds_super_strict = negative_changes_per_industry_super_strict.groupby('Industry Title')['Employment_Change'].quantile(0.01)
+else:
+    dip_thresholds_super_strict = pd.Series([], dtype='float64') # Empty series if no negative changes
+
+# Identify significant dips based on the calculated super-strict thresholds
+significant_dips_list_super_strict = []
+for industry, threshold in dip_thresholds_super_strict.items():
+    industry_dips_super_strict = melted_df_sorted[
+        (melted_df_sorted['Industry Title'] == industry) &
+        (melted_df_sorted['Employment_Change'] <= threshold)
+    ].copy()
+    significant_dips_list_super_strict.append(industry_dips_super_strict)
+
+# Concatenate all identified significant dips into a single DataFrame
+if significant_dips_list_super_strict:
+    recession_dips_df_super_strict = pd.concat(significant_dips_list_super_strict)
+else:
+    recession_dips_df_super_strict = pd.DataFrame(columns=['Industry Title', 'Month', 'Employment', 'Employment_Change'])
+
+# Select relevant columns for the final DataFrame and rename for clarity
+recession_dips_df_super_strict = recession_dips_df_super_strict[['Industry Title', 'Month', 'Employment_Change']]
+recession_dips_df_super_strict.rename(columns={'Employment_Change': 'Dip_Magnitude'}, inplace=True)
+
+# Add a column for absolute dip magnitude for log scale visualization
+recession_dips_df_super_strict['Abs_Dip_Magnitude'] = recession_dips_df_super_strict['Dip_Magnitude'].abs()
+
+print("DataFrame of Super-Extreme Significant Monthly Employment Dips (1st Percentile Threshold):")
+display(recession_dips_df_super_strict.sort_values(by=['Month', 'Industry Title']))
+
+import plotly.express as px
+import numpy as np
+
+# Create an interactive line plot of the super-extreme significant dips
+fig_dips_super_strict = px.line(
+    recession_dips_df_super_strict,
+    x='Month',
+    y='Abs_Dip_Magnitude', # Use absolute magnitude for log scale
+    color='Industry Title',
+    title='Super-Extreme Significant Monthly Employment Dips by Industry (1st Percentile)',
+    labels={
+        'Month': 'Date',
+        'Abs_Dip_Magnitude': 'Dip Magnitude (Change in Employment)' # Label still implies negative change
+    },
+    hover_data={'Month': '|%Y-%m-%d', 'Industry Title': True, 'Dip_Magnitude': ':, .0f', 'Abs_Dip_Magnitude': False}
+)
+
+fig_dips_super_strict.update_traces(mode='lines+markers', marker=dict(size=10, opacity=0.8, line=dict(width=1, color='DarkSlateGrey')))
+
+# Check if there are dips to avoid errors with empty dataframes
+if not recession_dips_df_super_strict.empty and not recession_dips_df_super_strict['Abs_Dip_Magnitude'].empty:
+    max_dip_abs_super_strict = recession_dips_df_super_strict['Abs_Dip_Magnitude'].max()
+    min_dip_abs_super_strict = recession_dips_df_super_strict['Abs_Dip_Magnitude'].min()
+
+    # Generate tick values that are powers of 10 within the range
+    if min_dip_abs_super_strict > 0:
+        tick_vals_super_strict = [10**i for i in range(int(np.floor(np.log10(min_dip_abs_super_strict))), int(np.ceil(np.log10(max_dip_abs_super_strict))) + 1)]
+        tick_vals_super_strict = [t for t in tick_vals_super_strict if min_dip_abs_super_strict <= t <= max_dip_abs_super_strict] # Filter to actual data range
+        tick_text_super_strict = [f'-{t:,}' for t in tick_vals_super_strict] # Create corresponding negative tick labels
+    else:
+        tick_vals_super_strict = None
+        tick_text_super_strict = None
+
+    fig_dips_super_strict.update_yaxes(
+        type='log',
+        title_text='Dip Magnitude (Change in Employment)',
+        tickvals=tick_vals_super_strict,
+        ticktext=tick_text_super_strict,
+        showgrid=True, gridwidth=1, gridcolor='LightGrey'
+    )
+else:
+    fig_dips_super_strict.update_yaxes(
+        title_text='Dip Magnitude (Change in Employment)',
+        showgrid=True, gridwidth=1, gridcolor='LightGrey'
+    )
+
+fig_dips_super_strict.update_layout(
+    hovermode="x unified",
+    legend_title_text='Industry',
+    legend=dict(
+        orientation="v",
+        yanchor="top",
+        y=1,
+        xanchor="left",
+        x=1.02
+    )
+)
+
+# Add grid for readability for x-axis
+fig_dips_super_strict.update_xaxes(showgrid=True, gridwidth=1, gridcolor='LightGrey')
+
+fig_dips_super_strict.show()
+
+# Calculate the 2nd percentile of negative Employment_Change for each industry
+# Only consider industries with at least some negative changes to calculate percentile
+negative_changes_per_industry_very_strict = melted_df_sorted[melted_df_sorted['Employment_Change'] < 0]
+
+# Ensure there are negative changes before calculating quantiles
+if not negative_changes_per_industry_very_strict.empty:
+    dip_thresholds_very_strict = negative_changes_per_industry_very_strict.groupby('Industry Title')['Employment_Change'].quantile(0.02)
+else:
+    dip_thresholds_very_strict = pd.Series([], dtype='float64') # Empty series if no negative changes
+
+# Identify significant dips based on the calculated very-strict thresholds
+significant_dips_list_very_strict = []
+for industry, threshold in dip_thresholds_very_strict.items():
+    industry_dips_very_strict = melted_df_sorted[
+        (melted_df_sorted['Industry Title'] == industry) &
+        (melted_df_sorted['Employment_Change'] <= threshold)
+    ].copy()
+    significant_dips_list_very_strict.append(industry_dips_very_strict)
+
+# Concatenate all identified significant dips into a single DataFrame
+if significant_dips_list_very_strict:
+    recession_dips_df_very_strict = pd.concat(significant_dips_list_very_strict)
+else:
+    recession_dips_df_very_strict = pd.DataFrame(columns=['Industry Title', 'Month', 'Employment', 'Employment_Change'])
+
+# Select relevant columns for the final DataFrame and rename for clarity
+recession_dips_df_very_strict = recession_dips_df_very_strict[['Industry Title', 'Month', 'Employment_Change']]
+recession_dips_df_very_strict.rename(columns={'Employment_Change': 'Dip_Magnitude'}, inplace=True)
+
+# Add a column for absolute dip magnitude for log scale visualization
+recession_dips_df_very_strict['Abs_Dip_Magnitude'] = recession_dips_df_very_strict['Dip_Magnitude'].abs()
+
+print("DataFrame of Very Extreme Significant Monthly Employment Dips (2nd Percentile Threshold):")
+display(recession_dips_df_very_strict.sort_values(by=['Month', 'Industry Title']))
+
+import plotly.express as px
+import numpy as np
+
+# Create an interactive line plot of the very extreme significant dips
+fig_dips_very_strict = px.line(
+    recession_dips_df_very_strict,
+    x='Month',
+    y='Abs_Dip_Magnitude', # Use absolute magnitude for log scale
+    color='Industry Title',
+    title='Very Extreme Significant Monthly Employment Dips by Industry (2nd Percentile)',
+    labels={
+        'Month': 'Date',
+        'Abs_Dip_Magnitude': 'Dip Magnitude (Change in Employment)' # Label still implies negative change
+    },
+    hover_data={'Month': '|%Y-%m-%d', 'Industry Title': True, 'Dip_Magnitude': ':, .0f', 'Abs_Dip_Magnitude': False}
+)
+
+fig_dips_very_strict.update_traces(mode='lines+markers', marker=dict(size=10, opacity=0.8, line=dict(width=1, color='DarkSlateGrey')))
+
+# Check if there are dips to avoid errors with empty dataframes
+if not recession_dips_df_very_strict.empty and not recession_dips_df_very_strict['Abs_Dip_Magnitude'].empty:
+    max_dip_abs_very_strict = recession_dips_df_very_strict['Abs_Dip_Magnitude'].max()
+    min_dip_abs_very_strict = recession_dips_df_very_strict['Abs_Dip_Magnitude'].min()
+
+    # Generate tick values that are powers of 10 within the range
+    if min_dip_abs_very_strict > 0:
+        tick_vals_very_strict = [10**i for i in range(int(np.floor(np.log10(min_dip_abs_very_strict))), int(np.ceil(np.log10(max_dip_abs_very_strict))) + 1)]
+        tick_vals_very_strict = [t for t in tick_vals_very_strict if min_dip_abs_very_strict <= t <= max_dip_abs_very_strict] # Filter to actual data range
+        tick_text_very_strict = [f'-{t:,}' for t in tick_vals_very_strict] # Create corresponding negative tick labels
+    else:
+        tick_vals_very_strict = None
+        tick_text_very_strict = None
+
+    fig_dips_very_strict.update_yaxes(
+        type='log',
+        title_text='Dip Magnitude (Change in Employment)',
+        tickvals=tick_vals_very_strict,
+        ticktext=tick_text_very_strict,
+        showgrid=True, gridwidth=1, gridcolor='LightGrey'
+    )
+else:
+    fig_dips_very_strict.update_yaxes(
+        title_text='Dip Magnitude (Change in Employment)',
+        showgrid=True, gridwidth=1, gridcolor='LightGrey'
+    )
+
+fig_dips_very_strict.update_layout(
+    hovermode="x unified",
+    legend_title_text='Industry',
+    legend=dict(
+        orientation="v",
+        yanchor="top",
+        y=1,
+        xanchor="left",
+        x=1.02
+    )
+)
+
+# Add grid for readability for x-axis
+fig_dips_very_strict.update_xaxes(showgrid=True, gridwidth=1, gridcolor='LightGrey')
+
+fig_dips_very_strict.show()
+
