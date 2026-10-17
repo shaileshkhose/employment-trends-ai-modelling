@@ -37,11 +37,14 @@ This project investigates employment trends in Illinois and evaluates how advanc
 # Recommended Data Sources
 ## Primary Sources
 
-1) Bureau of Labor Statistics (BLS)
+1) Illinois Department of Employment Securities
+    * Occupational Employment Statistics
+
+2) Bureau of Labor Statistics (BLS)
     * Employment trends
     * Occupational Employment Statistics
 
-2) O*NET (Occupational Information Network)
+3) O*NET (Occupational Information Network)
 
       O*NET is a U.S. Department of Labor database that provides detailed information about occupations. It is often used to study automation and AI exposure because it describes what workers actually do in their jobs. (https://www.onetonline.org/)
     * Job tasks and skills
